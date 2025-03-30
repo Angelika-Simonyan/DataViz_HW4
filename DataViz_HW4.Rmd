@@ -1,0 +1,148 @@
+```{r}
+library(dplyr)
+library(ggplot2)
+
+df <- read.csv("bundesliga.csv", stringsAsFactors = FALSE)
+
+df_home <- df %>%
+  mutate(Points = ifelse(FTHG > FTAG, 3, ifelse(FTHG == FTAG, 1, 0))) %>%
+  select(SEASON, TEAM = HOMETEAM, Points)
+
+df_away <- df %>%
+  mutate(Points = ifelse(FTAG > FTHG, 3, ifelse(FTAG == FTHG, 1, 0))) %>%
+  select(SEASON, TEAM = AWAYTEAM, Points)
+
+points_df <- bind_rows(df_home, df_away) %>%
+  group_by(SEASON, TEAM) %>%
+  summarise(TotalPoints = sum(Points), .groups = "drop")
+
+seasons <- unique(points_df$SEASON)
+
+plots <- list()
+
+for (s in seasons) {
+  season_data <- points_df %>% filter(SEASON == s)
+  season_data <- season_data %>% arrange(desc(TotalPoints))
+  
+  n_teams <- nrow(season_data)
+  team_colors <- setNames(rainbow(n_teams), season_data$TEAM)
+  
+  winner <- season_data$TEAM[1]
+  
+  season_data <- season_data %>%
+    mutate(PlotColor = ifelse(TEAM == winner, team_colors[TEAM], "grey"))
+  
+  p <- ggplot(season_data, aes(x = reorder(TEAM, TotalPoints), y = TotalPoints)) +
+    geom_bar(stat = "identity", aes(fill = PlotColor)) +
+    scale_fill_identity() +
+    coord_flip() +
+    labs(title = paste("Season", s, "- Total Points (Winner highlighted)"),
+         x = "Team",
+         y = "Total Points") +
+    theme_minimal()
+  
+  plots[[s]] <- p
+}
+
+pdf("season_points.pdf", width = 8, height = 6)
+for (p in plots) {
+  print(p)
+}
+dev.off()
+
+```
+
+```{r}
+if(!"FTTG" %in% names(df)) {
+  df$FTTG <- df$FTHG + df$FTAG
+}
+
+# Print unique team names to verify naming.
+unique_teams <- unique(c(df$HOMETEAM, df$AWAYTEAM))
+print(unique_teams)
+
+# Function to calculate total goals per season for a given team.
+calc_team_season_goals <- function(team, data) {
+  home_goals <- data %>%
+    filter(HOMETEAM == team) %>%
+    group_by(SEASON) %>%
+    summarise(goals_home = sum(FTHG, na.rm = TRUE))
+  
+  away_goals <- data %>%
+    filter(AWAYTEAM == team) %>%
+    group_by(SEASON) %>%
+    summarise(goals_away = sum(FTAG, na.rm = TRUE))
+  
+  total <- full_join(home_goals, away_goals, by = "SEASON") %>%
+    mutate(goals_home = ifelse(is.na(goals_home), 0, goals_home),
+           goals_away = ifelse(is.na(goals_away), 0, goals_away),
+           total_goals = goals_home + goals_away)
+  return(total)
+}
+
+# Update these team names based on the output of unique_teams.
+teams <- c("Bayern Munich", "Bayer Leverkusen", "Borussia Dortmund")
+
+# Compute historical season total goals for each team.
+historical <- lapply(teams, calc_team_season_goals, data = df)
+names(historical) <- teams
+
+# Monte Carlo Simulation parameters
+n_sim <- 1000   # number of simulations per future season
+n_future <- 10  # number of future seasons to simulate
+
+# Initialize a data frame with proper columns for simulation results.
+sim_results <- data.frame(
+  Team = character(),
+  FutureSeason = integer(),
+  SimulatedGoals = numeric(),
+  stringsAsFactors = FALSE
+)
+
+set.seed(123)  # for reproducibility
+
+# For each team, simulate future season goals by bootstrapping from historical totals.
+for(team in teams) {
+  hist_data <- historical[[team]]
+  # Use only the available total_goals (remove any NA values)
+  season_goals <- hist_data$total_goals[!is.na(hist_data$total_goals)]
+  
+  # Check if historical data is available; if not, skip this team.
+  if(length(season_goals) == 0) {
+    cat("No historical data for team", team, "\n")
+    next
+  }
+  
+  for(season in 1:n_future) {
+    # For each future season, sample n_sim values from the historical distribution.
+    sim_goals <- sample(season_goals, size = n_sim, replace = TRUE)
+    temp <- data.frame(
+      Team = team,
+      FutureSeason = season,
+      SimulatedGoals = sim_goals,
+      stringsAsFactors = FALSE
+    )
+    sim_results <- rbind(sim_results, temp)
+  }
+}
+
+# Check if simulation results are available
+if(nrow(sim_results) == 0){
+  stop("Simulation results are empty. Please check the team names and historical data.")
+}
+
+# Ensure Team is a factor for proper facetting
+sim_results$Team <- as.factor(sim_results$Team)
+
+# Visualization: Create boxplots of simulated season goals by future season for each team.
+ggplot(sim_results, aes(x = factor(FutureSeason), y = SimulatedGoals, fill = Team)) +
+  geom_boxplot() +
+  facet_wrap(~ Team, scales = "free_y") +
+  labs(title = "Monte Carlo Simulation: Predicted Season Goals for Next 10 Seasons",
+       x = "Future Season (1 = next season)",
+       y = "Simulated Total Goals") +
+  theme_minimal()
+
+```
+
+
